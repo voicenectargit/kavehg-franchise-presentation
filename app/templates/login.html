@@ -1,0 +1,212 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign In — Ambivo Content Portal</title>
+  <link rel="icon" type="image/png" href="/static/img/favicon.png">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f3f4f6;
+      color: #1f2937;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      min-height: 100dvh;
+      padding: 1rem;
+      -webkit-text-size-adjust: 100%;
+    }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,.08);
+      padding: 2.5rem 2rem;
+      width: 100%;
+      max-width: 400px;
+    }
+    @media (max-width: 380px) {
+      .card { padding: 1.75rem 1.25rem; }
+      .logo h1 { font-size: 1.2rem; }
+    }
+    .logo {
+      text-align: center;
+      margin-bottom: 1.5rem;
+    }
+    .logo svg { width: 48px; height: 48px; }
+    .logo h1 { font-size: 1.35rem; margin: .5rem 0 0; font-weight: 700; }
+    .logo p { font-size: .85rem; color: #6b7280; margin: .25rem 0 0; }
+    label {
+      display: block;
+      font-size: .85rem;
+      font-weight: 500;
+      margin-bottom: .35rem;
+      color: #374151;
+    }
+    input[type="email"], input[type="password"] {
+      width: 100%;
+      padding: .6rem .75rem;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      /* 16px avoids iOS Safari zoom-on-focus while still allowing user zoom */
+      font-size: 16px;
+      outline: none;
+      margin-bottom: 1rem;
+      transition: border-color .15s;
+    }
+    input:focus { border-color: #2563eb; box-shadow: 0 0 0 3px rgba(37,99,235,.1); }
+    .btn {
+      width: 100%;
+      padding: .65rem;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: .95rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn:hover { background: #1d4ed8; }
+    .btn:disabled { opacity: .55; cursor: not-allowed; }
+    .error {
+      background: #fef2f2;
+      color: #b91c1c;
+      border: 1px solid #fecaca;
+      border-radius: 8px;
+      padding: .55rem .75rem;
+      font-size: .85rem;
+      margin-bottom: 1rem;
+      display: none;
+    }
+    .error.show { display: block; }
+    .spinner {
+      display: inline-block;
+      width: 16px; height: 16px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .6s linear infinite;
+      vertical-align: middle;
+      margin-right: .4rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo">
+      <img src="/static/img/ambivo-wordmark.png" alt="Ambivo" style="height:40px;margin-bottom:.5rem">
+      <h1>Content Portal</h1>
+      <p>Sign in to manage your presentations</p>
+    </div>
+
+    <div class="error" id="error"></div>
+
+    <form id="loginForm" autocomplete="on">
+      <label for="email">Email</label>
+      <input type="email" id="email" name="email" placeholder="you@company.com" required autofocus>
+
+      <label for="password">Password</label>
+      <input type="password" id="password" name="password" placeholder="Your password" required>
+
+      <button type="submit" class="btn" id="submitBtn">Sign in</button>
+    </form>
+  </div>
+
+  <script>
+  (function () {
+    var SSO_COOKIES = ["auth_token", "dev_auth_token"];
+
+    function readAmbivoCookie() {
+      for (var i = 0; i < SSO_COOKIES.length; i++) {
+        var m = document.cookie.match(new RegExp("(?:^|; )" + SSO_COOKIES[i] + "=([^;]+)"));
+        if (m) return decodeURIComponent(m[1]);
+      }
+      return null;
+    }
+
+    // Cross-app SSO: if there's no local session but the shared .ambivo.com
+    // auth cookie is present, exchange it for a portal session — no relogin.
+    function ssoAdopt() {
+      if (localStorage.getItem("cp_token")) return Promise.resolve();
+      // Respect an explicit sign-out: don't silently re-adopt the shared cookie
+      // until the user manually logs in again (which clears this flag).
+      if (localStorage.getItem("cp_sso_optout")) return Promise.resolve();
+      var token = readAmbivoCookie();
+      if (!token) return Promise.resolve();
+      return fetch("/api/auth/from-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token: token }),
+      })
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (d && d.result === 1 && d.token) {
+            localStorage.setItem("cp_token", d.token);
+            localStorage.setItem("cp_user", JSON.stringify(d.user));
+          }
+        })
+        .catch(function () { /* fall through to manual login */ });
+    }
+
+    ssoAdopt().then(function () {
+      // Skip login if already authenticated (locally or via SSO)
+      if (localStorage.getItem("cp_token") && localStorage.getItem("cp_user")) {
+        window.location.href = "/dashboard";
+        return;
+      }
+      initLoginForm();
+    });
+
+    function initLoginForm() {
+    var form = document.getElementById("loginForm");
+    var errEl = document.getElementById("error");
+    var btn = document.getElementById("submitBtn");
+
+    form.addEventListener("submit", function (e) {
+      e.preventDefault();
+      errEl.classList.remove("show");
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>Signing in\u2026';
+
+      var email = document.getElementById("email").value.trim();
+      var password = document.getElementById("password").value;
+
+      fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          email: email,
+          password: password,
+          os: "web",
+          device_id: "web-" + navigator.userAgent.slice(0, 50)
+        }),
+      })
+        .then(function (r) {
+          if (!r.ok) return r.json().then(function (d) { throw new Error(d.detail || "Login failed"); });
+          return r.json();
+        })
+        .then(function (data) {
+          // Manual login re-enables cross-app SSO auto-adopt.
+          localStorage.removeItem("cp_sso_optout");
+          // Store auth in localStorage
+          localStorage.setItem("cp_token", data.token);
+          localStorage.setItem("cp_user", JSON.stringify(data.user));
+          window.location.href = "/dashboard";
+        })
+        .catch(function (err) {
+          errEl.textContent = err.message;
+          errEl.classList.add("show");
+          btn.disabled = false;
+          btn.textContent = "Sign in";
+        });
+    });
+    }
+  })();
+  </script>
+</body>
+</html>

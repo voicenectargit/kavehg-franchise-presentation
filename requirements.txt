@@ -1,0 +1,15 @@
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic-settings>=2.0
+motor>=3.3.0
+PyJWT>=2.8.0
+httpx>=0.27.0
+markdown>=3.5
+pymdown-extensions>=10.0
+jinja2>=3.1.0
+python-slugify>=8.0
+sse-starlette>=2.0
+python-multipart>=0.0.9
+markdownify>=0.13.0
+anthropic>=0.40.0
+markitdown[pdf,pptx,docx]>=0.1.5

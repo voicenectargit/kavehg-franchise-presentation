@@ -1,0 +1,383 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Edit Presentation — Ambivo Content Portal</title>
+  <link rel="icon" type="image/png" href="/static/img/favicon.png">
+  <link rel="stylesheet" href="/static/css/dashboard.css?v={{ asset_version }}">
+</head>
+<body data-api="{{ api_base }}">
+  <nav>
+    <a class="brand" href="/dashboard">Content Portal</a>
+    <div class="user-area">
+      <span id="userName"></span>
+      <button class="btn-sm btn-ghost" onclick="logout()">Sign out</button>
+    </div>
+  </nav>
+
+  <div class="container">
+    <div class="form-card">
+      <h2>Edit Presentation</h2>
+
+      <div id="statsBar" class="stats-bar" style="display:none">
+        <div class="stat-item"><span class="stat-value" id="statViews">0</span><span class="stat-label">Views</span></div>
+        <div class="stat-item stat-clickable" id="statQueriesWrap"><span class="stat-value" id="statQueries">0</span><span class="stat-label">Total Queries</span></div>
+        <div class="stat-item"><span class="stat-value" id="statToday">0</span><span class="stat-label">Today</span></div>
+      </div>
+
+      <!-- Chat Queries Modal -->
+      <div id="queriesModal" class="modal-overlay" style="display:none">
+        <div class="modal-panel">
+          <div class="modal-header">
+            <h3>Chat Queries</h3>
+            <div style="display:flex;gap:.5rem;align-items:center">
+              <button class="btn-sm btn-ghost" id="btnClearAllQueries">Clear All</button>
+              <button class="modal-close" id="btnCloseQueries">&times;</button>
+            </div>
+          </div>
+          <div class="modal-body" id="queriesBody">
+            <div class="loading">Loading queries...</div>
+          </div>
+          <div class="modal-footer" id="queriesFooter" style="display:none">
+            <button class="btn-sm btn-ghost" id="btnQueriesPrev" disabled>&laquo; Prev</button>
+            <span id="queriesPageInfo" style="font-size:.85rem;color:#6b7280"></span>
+            <button class="btn-sm btn-ghost" id="btnQueriesNext" disabled>Next &raquo;</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="loading" id="editLoading">Loading presentation...</div>
+
+      <div id="editContent" style="display:none">
+        <div class="form-error" id="formError"></div>
+
+        <form id="editForm" data-id="{{ presentation_id }}">
+          <label for="f_title">Title</label>
+          <input type="text" id="f_title" required placeholder="My Awesome Page">
+
+          <label for="f_desc">Description (optional)</label>
+          <input type="text" id="f_desc" placeholder="A short summary">
+
+          <label for="f_slug">Slug</label>
+          <input type="text" id="f_slug" disabled style="background:#f3f4f6;color:#6b7280">
+          <p class="form-hint">Slug cannot be changed after creation</p>
+
+          <label>Live URL</label>
+          <div class="live-url-row">
+            <a id="liveUrlLink" href="#" target="_blank" rel="noopener" class="live-url-link"></a>
+            <button type="button" class="btn-sm btn-ghost" id="btnCopyLiveUrl" title="Copy to clipboard">Copy</button>
+            <span class="form-hint" id="liveUrlGate" style="display:none"></span>
+          </div>
+
+          <label>Tags</label>
+          <div class="tags-input" id="tagsContainer">
+            <input type="text" placeholder="Type and press Enter">
+          </div>
+
+          <div class="toggle-row">
+            <label for="f_chat">Chat enabled</label>
+            <div class="toggle">
+              <input type="checkbox" id="f_chat" checked>
+              <span class="slider"></span>
+            </div>
+          </div>
+
+          <label for="f_access_mode">Who can view this page?</label>
+          <select id="f_access_mode" style="margin-bottom:.5rem">
+            <option value="public">Public — anyone with the link</option>
+            <option value="access_code">Access code — visitors enter a code</option>
+            <option value="ambivo_session">Ambivo session — logged-in Ambivo users only</option>
+          </select>
+          <p class="form-hint" id="accessModeHint"></p>
+          <div id="tenantOnlySection" style="display:none;margin:.25rem 0 .75rem 0">
+            <label style="display:flex;align-items:center;gap:.5rem;font-weight:normal">
+              <input type="checkbox" id="f_access_tenant_only">
+              Only allow users from my organization (tenant)
+            </label>
+            <p class="form-hint" style="margin-top:.25rem">When on, the JWT's tenant must match this page's owning tenant. Cross-tenant Ambivo users get a 403.</p>
+          </div>
+          <!-- hidden mirror kept for back-compat with legacy boolean access_protected -->
+          <input type="checkbox" id="f_access" style="display:none">
+          <div id="accessCodesSection" style="display:none">
+            <label style="margin-bottom:.3rem">Access codes:</label>
+            <div class="access-codes-list" id="accessCodesList"></div>
+            <div style="display:flex;gap:.5rem;align-items:center;margin:.5rem 0">
+              <input type="text" id="newCodeInput" placeholder="Custom code (A-Z, 0-9)" style="flex:1;margin:0" maxlength="12">
+              <button type="button" class="btn-sm btn-primary" id="btnAddCode">Add</button>
+              <button type="button" class="btn-sm btn-ghost" id="btnAutoGen">Auto-generate</button>
+            </div>
+            <button type="button" class="btn-sm btn-ghost" id="btnRegenCodes" style="margin-bottom:1rem">Regenerate All</button>
+          </div>
+
+          <div class="toggle-row">
+            <label for="f_header">Page header</label>
+            <div class="toggle">
+              <input type="checkbox" id="f_header">
+              <span class="slider"></span>
+            </div>
+          </div>
+          <div id="headerSection" style="display:none">
+            <div class="header-fields">
+              <label>Logo (max 1 MB)</label>
+              <input type="file" id="f_logo" accept="image/*" style="margin-bottom:.75rem">
+              <div id="logoPreviewWrap" style="display:none;margin-bottom:.75rem">
+                <img id="logoPreview" style="max-height:64px;border-radius:4px">
+                <button type="button" class="btn-sm btn-ghost" id="btnRemoveLogo" style="margin-left:.5rem">Remove</button>
+              </div>
+              <label for="f_link_url">Link URL</label>
+              <input type="text" id="f_link_url" placeholder="https://www.example.com">
+              <label for="f_link_text">Link display text (optional)</label>
+              <input type="text" id="f_link_text" placeholder="My Company">
+              <label for="f_header_email">Email (optional)</label>
+              <input type="text" id="f_header_email" placeholder="info@example.com">
+              <label for="f_header_phone">Phone (optional)</label>
+              <input type="text" id="f_header_phone" placeholder="+1-555-0100">
+              <label for="f_header_text">Additional text (optional)</label>
+              <input type="text" id="f_header_text" placeholder="Tagline or address">
+            </div>
+          </div>
+
+          <!-- Page Theme -->
+          <div class="toggle-row">
+            <label for="f_theme_toggle">Page theme</label>
+            <div class="toggle">
+              <input type="checkbox" id="f_theme_toggle">
+              <span class="slider"></span>
+            </div>
+          </div>
+          <p class="form-hint">Customize colors, font, and dark mode for your hosted page.</p>
+          <div id="themeSection" style="display:none">
+            <div class="header-fields">
+              <label>Theme Preset</label>
+              <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:.5rem;margin-bottom:.75rem">
+                <button type="button" class="theme-preset-btn" data-preset="modern" style="border:1px solid #e5e7eb;border-radius:6px;padding:.5rem;text-align:left;cursor:pointer;background:#fff"><div style="display:flex;gap:3px;margin-bottom:4px"><span style="width:14px;height:14px;border-radius:50%;background:#2563eb;display:inline-block"></span><span style="width:14px;height:14px;border-radius:50%;background:#4f46e5;display:inline-block"></span><span style="width:14px;height:14px;border-radius:50%;background:#f59e0b;display:inline-block"></span></div><span style="font-size:.8rem;font-weight:600">Modern</span></button>
+                <button type="button" class="theme-preset-btn" data-preset="minimal" style="border:1px solid #e5e7eb;border-radius:6px;padding:.5rem;text-align:left;cursor:pointer;background:#fff"><div style="display:flex;gap:3px;margin-bottom:4px"><span style="width:14px;height:14px;border-radius:50%;background:#475569;display:inline-block"></span><span style="width:14px;height:14px;border-radius:50%;background:#64748b;display:inline-block"></span><span style="width:14px;height:14px;border-radius:50%;background:#94a3b8;display:inline-block"></span></div><span style="font-size:.8rem;font-weight:600">Minimal</span></button>
+                <button type="button" class="theme-preset-btn" data-preset="bold" style="border:1px solid #e5e7eb;border-radius:6px;padding:.5rem;text-align:left;cursor:pointer;background:#fff"><div style="display:flex;gap:3px;margin-bottom:4px"><span style="width:14px;height:14px;border-radius:50%;background:#7c3aed;display:inline-block"></span><span style="width:14px;height:14px;border-radius:50%;background:#ec4899;display:inline-block"></span><span style="width:14px;height:14px;border-radius:50%;background:#f97316;display:inline-block"></span></div><span style="font-size:.8rem;font-weight:600">Bold</span></button>
+                <button type="button" class="theme-preset-btn" data-preset="warm" style="border:1px solid #e5e7eb;border-radius:6px;padding:.5rem;text-align:left;cursor:pointer;background:#fff"><div style="display:flex;gap:3px;margin-bottom:4px"><span style="width:14px;height:14px;border-radius:50%;background:#ea580c;display:inline-block"></span><span style="width:14px;height:14px;border-radius:50%;background:#d97706;display:inline-block"></span><span style="width:14px;height:14px;border-radius:50%;background:#dc2626;display:inline-block"></span></div><span style="font-size:.8rem;font-weight:600">Warm</span></button>
+                <button type="button" class="theme-preset-btn" data-preset="nature" style="border:1px solid #e5e7eb;border-radius:6px;padding:.5rem;text-align:left;cursor:pointer;background:#fff"><div style="display:flex;gap:3px;margin-bottom:4px"><span style="width:14px;height:14px;border-radius:50%;background:#059669;display:inline-block"></span><span style="width:14px;height:14px;border-radius:50%;background:#10b981;display:inline-block"></span><span style="width:14px;height:14px;border-radius:50%;background:#0d9488;display:inline-block"></span></div><span style="font-size:.8rem;font-weight:600">Nature</span></button>
+                <button type="button" class="theme-preset-btn" data-preset="dark" style="border:1px solid #e5e7eb;border-radius:6px;padding:.5rem;text-align:left;cursor:pointer;background:#1e293b"><div style="display:flex;gap:3px;margin-bottom:4px"><span style="width:14px;height:14px;border-radius:50%;background:#06b6d4;display:inline-block"></span><span style="width:14px;height:14px;border-radius:50%;background:#8b5cf6;display:inline-block"></span><span style="width:14px;height:14px;border-radius:50%;background:#f59e0b;display:inline-block"></span></div><span style="font-size:.8rem;font-weight:600;color:#f1f5f9">Dark</span></button>
+              </div>
+              <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:.75rem;margin-bottom:.75rem">
+                <div><label for="f_theme_primary" style="font-size:.85rem">Primary</label><div style="display:flex;align-items:center;gap:.5rem"><input type="color" id="f_theme_primary" value="#2563eb" style="width:32px;height:32px;border:1px solid #d1d5db;border-radius:4px;cursor:pointer"><span id="f_theme_primary_hex" style="font-size:.75rem;font-family:monospace;color:#6b7280">#2563eb</span></div></div>
+                <div><label for="f_theme_secondary" style="font-size:.85rem">Secondary</label><div style="display:flex;align-items:center;gap:.5rem"><input type="color" id="f_theme_secondary" value="#4f46e5" style="width:32px;height:32px;border:1px solid #d1d5db;border-radius:4px;cursor:pointer"><span id="f_theme_secondary_hex" style="font-size:.75rem;font-family:monospace;color:#6b7280">#4f46e5</span></div></div>
+                <div><label for="f_theme_accent" style="font-size:.85rem">Accent</label><div style="display:flex;align-items:center;gap:.5rem"><input type="color" id="f_theme_accent" value="#f59e0b" style="width:32px;height:32px;border:1px solid #d1d5db;border-radius:4px;cursor:pointer"><span id="f_theme_accent_hex" style="font-size:.75rem;font-family:monospace;color:#6b7280">#f59e0b</span></div></div>
+              </div>
+              <label for="f_theme_font">Font Family</label>
+              <select id="f_theme_font" style="margin-bottom:.75rem">
+                <option value="System Default">System Default</option>
+                <option value="Inter">Inter</option><option value="DM Sans">DM Sans</option><option value="Space Grotesk">Space Grotesk</option>
+                <option value="Nunito">Nunito</option><option value="Outfit">Outfit</option><option value="JetBrains Mono">JetBrains Mono</option>
+                <option value="Poppins">Poppins</option><option value="Lato">Lato</option><option value="Roboto">Roboto</option>
+              </select>
+              <div class="toggle-row" style="margin-bottom:.75rem"><label for="f_theme_dark">Dark mode</label><div class="toggle"><input type="checkbox" id="f_theme_dark"><span class="slider"></span></div></div>
+              <label for="f_theme_css">Custom CSS (optional, max 10KB)</label>
+              <textarea id="f_theme_css" rows="4" placeholder="/* Custom CSS */" style="font-family:monospace;font-size:.8rem"></textarea>
+            </div>
+          </div>
+
+          <label>Content Type</label>
+          <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:.5rem">
+            <div class="content-type-toggle">
+              <button type="button" id="btnTypeMarkdown" class="active">Markdown</button>
+              <button type="button" id="btnTypeHtml">HTML</button>
+            </div>
+            <button type="button" class="btn-ai" id="btnAiGenerate">&#9733; AI Generate</button>
+          </div>
+
+          <div id="markdownEditor">
+            <div class="preview-toggle">
+              <button type="button" id="btnWrite" class="active">Write</button>
+              <button type="button" id="btnPreview">Preview</button>
+            </div>
+            <textarea id="f_md" class="md-editor" placeholder="# Your Markdown here..."></textarea>
+            <div class="md-preview" id="mdPreview"></div>
+          </div>
+
+          <div id="htmlEditor" style="display:none">
+            <div class="preview-toggle">
+              <button type="button" id="btnHtmlWrite" class="active">Code</button>
+              <button type="button" id="btnHtmlPreview">Preview</button>
+            </div>
+            <textarea id="f_html" class="md-editor" placeholder="<!DOCTYPE html>&#10;<html>&#10;<head>...</head>&#10;<body>&#10;  Your HTML here...&#10;</body>&#10;</html>"></textarea>
+            <iframe id="htmlPreviewFrame" style="display:none;width:100%;min-height:400px;border:1px solid #e5e7eb;border-radius:6px;background:#fff"></iframe>
+            <p class="form-hint">Paste or write a full HTML page. It will render exactly as-is, including styles and layout. Only clean text is indexed for AI chat.</p>
+          </div>
+
+          <input type="hidden" id="f_content_type" value="markdown">
+
+          <div class="form-actions">
+            <a class="btn-sm btn-ghost" href="/dashboard">Cancel</a>
+            <button type="submit" class="btn-sm btn-primary" id="submitBtn">Update Presentation</button>
+          </div>
+        </form>
+
+        <!-- Chapters management (book layout) -->
+        <section id="chaptersSection" class="chapters-section" style="display:none">
+          <div class="chapters-header">
+            <h3>Chapters</h3>
+            <span id="chaptersCount" class="chapters-count"></span>
+            <div class="chapters-header-actions">
+              <button type="button" class="btn-sm btn-ghost" id="btnReindexKb"
+                title="Re-run KB indexing for all chapters (truncate + index).">
+                Reindex
+              </button>
+              <button type="button" class="btn-sm btn-ghost btn-danger-ghost" id="btnResetKb"
+                title="Delete and recreate the KB collection, then re-index all chapters. Use this if chat returns vector-dimension errors.">
+                Reset KB &amp; Reindex
+              </button>
+              <button type="button" class="btn-sm btn-ghost btn-danger-ghost" id="btnDeleteAllChapters"
+                title="Delete the KB collection and remove every chapter. This cannot be undone.">
+                Delete all
+              </button>
+            </div>
+          </div>
+          <p class="form-hint">
+            Drag rows to reorder. Click a row to edit its content. Filenames you upload
+            become chapter slugs — re-uploading a file with the same name updates that
+            chapter in place.
+          </p>
+
+          <div id="chaptersUploadZone" class="chapters-upload-zone">
+            <input type="file" id="chaptersFileInput" multiple
+              accept=".md,.markdown,.txt,.html,.htm,.pdf,.docx,.pptx,.xlsx"
+              style="display:none">
+            <input type="file" id="chaptersFolderInput" webkitdirectory directory
+              style="display:none">
+            <p>
+              <button type="button" class="btn-sm btn-primary" id="btnChaptersPick">
+                Upload chapters
+              </button>
+              <button type="button" class="btn-sm btn-ghost" id="btnChaptersPickFolder">
+                Choose folder
+              </button>
+              <span class="form-hint">or drop files (.md, .pdf, .docx, .pptx)</span>
+            </p>
+          </div>
+
+          <div id="chaptersUploadStatus" class="chapters-upload-status" style="display:none"></div>
+
+          <ol id="chaptersList" class="chapters-list">
+            <li class="chapters-empty">Loading chapters…</li>
+          </ol>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <!-- Sticky save bar — submits the edit form via the form attribute -->
+  <div id="stickySaveBar" class="sticky-save-bar" style="display:none">
+    <div class="sticky-save-bar-inner">
+      <span class="sticky-save-status" id="stickySaveStatus">Unsaved changes</span>
+      <div class="sticky-save-actions">
+        <a class="btn-sm btn-ghost" href="/dashboard">Cancel</a>
+        <button type="submit" form="editForm" class="btn-sm btn-primary" id="stickySaveBtn">
+          Save changes
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chapter editor modal -->
+  <div id="chapterModal" class="modal-overlay" style="display:none">
+    <div class="modal-panel modal-panel-wide">
+      <div class="modal-header">
+        <h3 id="chapterModalTitle">Edit chapter</h3>
+        <button class="modal-close" id="btnChapterClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-error" id="chapterFormError" style="display:none"></div>
+        <label for="chapterTitleInput">Title</label>
+        <input type="text" id="chapterTitleInput" placeholder="Chapter title">
+        <label for="chapterSectionInput">Section (optional)</label>
+        <input type="text" id="chapterSectionInput" placeholder="e.g. Getting Started">
+        <label for="chapterMarkdownInput">Markdown</label>
+        <textarea id="chapterMarkdownInput" class="md-editor" rows="20"
+          placeholder="# Chapter content..."></textarea>
+      </div>
+      <div class="modal-footer" style="justify-content:flex-end;gap:.5rem">
+        <button type="button" class="btn-sm btn-ghost" id="btnChapterCancel">Cancel</button>
+        <button type="button" class="btn-sm btn-primary" id="btnChapterSave">Save chapter</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Delete-all confirmation modal -->
+  <div id="deleteAllModal" class="modal-overlay" style="display:none">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h3>Delete all chapters?</h3>
+        <button class="modal-close" id="btnDeleteAllClose">&times;</button>
+      </div>
+      <div class="modal-body">
+        <p id="deleteAllMessage" style="margin:0 0 .5rem">
+          This will permanently delete every chapter.
+        </p>
+        <p class="form-hint" style="margin:0">
+          The knowledge-base collection is deleted first, then all chapters are
+          removed. This cannot be undone.
+        </p>
+      </div>
+      <div class="modal-footer" style="justify-content:flex-end;gap:.5rem">
+        <button type="button" class="btn-sm btn-ghost" id="btnDeleteAllCancel">Cancel</button>
+        <button type="button" class="btn-sm btn-primary btn-danger" id="btnDeleteAllConfirm">Delete all</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- AI Generate Modal -->
+  <div id="aiModal" class="modal-overlay" style="display:none">
+    <div class="modal-panel">
+      <div class="modal-header">
+        <h3>&#9733; AI Page Generator</h3>
+        <button class="modal-close" id="btnAiClose">&times;</button>
+      </div>
+      <div class="modal-body" id="aiBody" style="flex:1;display:flex;flex-direction:column;overflow-y:auto">
+        <div id="aiStepPrompt">
+          <p style="color:#6b7280;font-size:.88rem;margin-bottom:.75rem">Describe the page you want. Include details about the purpose, branding, visual style, and content sections.</p>
+          <textarea id="aiPrompt" class="md-editor" style="min-height:120px" placeholder="e.g. Create a modern landing page for my Italian restaurant in downtown Seattle. We serve fresh pasta and wood-fired pizza. Use warm tones with a hero section, menu highlights, testimonials, and a reservation form."></textarea>
+          <div style="display:flex;gap:.5rem;margin-top:.75rem">
+            <button class="btn-sm btn-primary" id="btnAiStart">Start Design Interview</button>
+            <button class="btn-sm btn-ghost" id="btnAiDirect">Generate Directly</button>
+          </div>
+          <p class="form-hint" style="margin-top:.5rem">"Start Design Interview" asks a few clarifying questions first. "Generate Directly" skips ahead (best for detailed prompts).</p>
+        </div>
+        <div id="aiStepInterview" style="display:none;flex:1;flex-direction:column">
+          <div class="ai-chat-log" id="aiChatLog"></div>
+          <div style="padding:.5rem .75rem;border-top:1px solid #e5e7eb">
+            <div id="aiQuestionsForm"></div>
+            <div style="display:flex;gap:.5rem;margin-top:.5rem">
+              <button class="btn-sm btn-primary" id="btnAiAnswer" disabled>Send Answers</button>
+              <span id="aiStatus" style="font-size:.82rem;color:#6b7280;align-self:center"></span>
+            </div>
+          </div>
+        </div>
+        <div id="aiStepLoading" style="display:none;text-align:center;padding:3rem 0">
+          <div class="ai-spinner" style="width:32px;height:32px;margin:0 auto 1rem"></div>
+          <p style="color:#6b7280">Generating your HTML page&hellip; This may take 15-30 seconds.</p>
+        </div>
+        <!-- Step 4: Preview -->
+        <div id="aiStepPreview" style="display:none;flex:1;flex-direction:column">
+          <div style="display:flex;gap:.5rem;margin-bottom:.5rem">
+            <button type="button" class="btn-sm btn-primary" id="btnAiPreviewTab" style="font-weight:600">Preview</button>
+            <button type="button" class="btn-sm btn-ghost" id="btnAiCodeTab">Edit Code</button>
+          </div>
+          <iframe id="aiPreviewFrame" style="flex:1;width:100%;min-height:350px;border:1px solid #e5e7eb;border-radius:6px;background:#fff;display:block"></iframe>
+          <textarea id="aiPreviewCode" class="md-editor" style="flex:1;min-height:350px;display:none;font-size:.8rem;font-family:monospace"></textarea>
+          <div style="display:flex;gap:.5rem;margin-top:.75rem;justify-content:flex-end">
+            <button type="button" class="btn-sm btn-ghost" id="btnAiDiscard">Discard</button>
+            <button type="button" class="btn-sm btn-primary" id="btnAiUseHtml">Use This HTML</button>
+          </div>
+        </div>
+      </div>
+      <div class="modal-footer" id="aiFooterError" style="display:none;color:#b91c1c;font-size:.85rem;padding:.5rem 1rem"></div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/turndown/dist/turndown.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/turndown-plugin-gfm/dist/turndown-plugin-gfm.js"></script>
+  <script src="/static/js/dashboard.js?v={{ asset_version }}"></script>
+  <script src="/static/js/chapters-editor.js?v={{ asset_version }}" data-presentation-id="{{ presentation_id }}"></script>
+</body>
+</html>

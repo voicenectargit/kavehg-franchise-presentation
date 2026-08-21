@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }} — Enter Access Code</title>
+  <link rel="icon" type="image/png" href="/static/img/favicon.png">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f3f4f6;
+      color: #1f2937;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      min-height: 100dvh;
+      padding: 1rem;
+      -webkit-text-size-adjust: 100%;
+    }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 20px rgba(0,0,0,.08);
+      padding: 2.5rem 2rem;
+      max-width: 400px;
+      width: 100%;
+      text-align: center;
+    }
+    .card h1 {
+      font-size: 1.25rem;
+      margin: 0 0 .5rem;
+    }
+    .card p {
+      font-size: .9rem;
+      color: #6b7280;
+      margin: 0 0 1.5rem;
+    }
+    .code-inputs {
+      display: flex;
+      gap: .5rem;
+      justify-content: center;
+      margin-bottom: 1.5rem;
+    }
+    .code-inputs input {
+      width: 44px;
+      height: 52px;
+      min-width: 0;
+      flex: 0 1 44px;
+      text-align: center;
+      font-size: 1.3rem;
+      font-weight: 700;
+      text-transform: uppercase;
+      border: 2px solid #d1d5db;
+      border-radius: 8px;
+      outline: none;
+      transition: border-color .15s;
+    }
+    @media (max-width: 380px) {
+      .card { padding: 2rem 1.25rem; }
+      .code-inputs { gap: .35rem; }
+      .code-inputs input { width: 38px; height: 48px; font-size: 1.15rem; }
+    }
+    @media (max-width: 320px) {
+      .code-inputs input { width: 34px; height: 44px; font-size: 1.05rem; }
+    }
+    .code-inputs input:focus {
+      border-color: #2563eb;
+      box-shadow: 0 0 0 3px rgba(37,99,235,.1);
+    }
+    .code-inputs input.error {
+      border-color: #dc2626;
+      animation: shake .3s;
+    }
+    @keyframes shake {
+      0%, 100% { transform: translateX(0); }
+      25% { transform: translateX(-4px); }
+      75% { transform: translateX(4px); }
+    }
+    .btn {
+      width: 100%;
+      padding: .7rem;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 1rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn:hover { background: #1d4ed8; }
+    .btn:disabled { opacity: .5; cursor: not-allowed; }
+    .error-msg {
+      color: #dc2626;
+      font-size: .85rem;
+      margin-top: 1rem;
+      display: none;
+    }
+    .error-msg.show { display: block; }
+    .lock-icon {
+      font-size: 2rem;
+      margin-bottom: .75rem;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="lock-icon">&#x1F512;</div>
+    <h1>{{ title }}</h1>
+    <p>This page is protected. Enter the 6-character access code to continue.</p>
+
+    <div class="code-inputs" id="codeInputs">
+      <input type="text" maxlength="1" autocomplete="off" autofocus>
+      <input type="text" maxlength="1" autocomplete="off">
+      <input type="text" maxlength="1" autocomplete="off">
+      <input type="text" maxlength="1" autocomplete="off">
+      <input type="text" maxlength="1" autocomplete="off">
+      <input type="text" maxlength="1" autocomplete="off">
+    </div>
+
+    <button class="btn" id="verifyBtn">Verify</button>
+    <div class="error-msg" id="errorMsg">Invalid access code. Please try again.</div>
+  </div>
+
+  <script>
+  (function () {
+    var slug = "{{ slug }}";
+    var inputs = document.querySelectorAll("#codeInputs input");
+    var verifyBtn = document.getElementById("verifyBtn");
+    var errorMsg = document.getElementById("errorMsg");
+
+    // Auto-focus and auto-advance
+    inputs.forEach(function (inp, i) {
+      inp.addEventListener("input", function () {
+        inp.value = inp.value.toUpperCase().replace(/[^A-Z0-9]/g, "");
+        if (inp.value && i < inputs.length - 1) {
+          inputs[i + 1].focus();
+        }
+        clearError();
+      });
+
+      inp.addEventListener("keydown", function (e) {
+        if (e.key === "Backspace" && !inp.value && i > 0) {
+          inputs[i - 1].focus();
+        }
+        if (e.key === "Enter") {
+          verify();
+        }
+      });
+
+      // Handle paste of full code
+      inp.addEventListener("paste", function (e) {
+        e.preventDefault();
+        var pasted = (e.clipboardData || window.clipboardData).getData("text").toUpperCase().replace(/[^A-Z0-9]/g, "");
+        for (var j = 0; j < inputs.length && j < pasted.length; j++) {
+          inputs[j].value = pasted[j];
+        }
+        var focusIdx = Math.min(pasted.length, inputs.length - 1);
+        inputs[focusIdx].focus();
+      });
+    });
+
+    verifyBtn.addEventListener("click", verify);
+
+    function getCode() {
+      var code = "";
+      inputs.forEach(function (inp) { code += inp.value; });
+      return code;
+    }
+
+    function clearError() {
+      errorMsg.classList.remove("show");
+      inputs.forEach(function (inp) { inp.classList.remove("error"); });
+    }
+
+    function showError() {
+      errorMsg.classList.add("show");
+      inputs.forEach(function (inp) { inp.classList.add("error"); });
+    }
+
+    function verify() {
+      var code = getCode();
+      if (code.length < 6) {
+        showError();
+        return;
+      }
+
+      verifyBtn.disabled = true;
+      verifyBtn.textContent = "Verifying\u2026";
+
+      fetch("/p/" + slug + "/verify", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code: code }),
+      })
+        .then(function (r) {
+          if (!r.ok) {
+            showError();
+            verifyBtn.disabled = false;
+            verifyBtn.textContent = "Verify";
+            return;
+          }
+          return r.json();
+        })
+        .then(function (data) {
+          if (data && data.verified) {
+            // Set cookie and reload page
+            document.cookie = "cp_access_" + slug + "=" + data.code + ";path=/;max-age=86400;SameSite=Lax";
+            window.location.reload();
+          }
+        })
+        .catch(function () {
+          showError();
+          verifyBtn.disabled = false;
+          verifyBtn.textContent = "Verify";
+        });
+    }
+  })();
+  </script>
+</body>
+</html>

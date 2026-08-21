@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en"{% if theme_dark_mode %} class="dark"{% endif %}>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ selected_chapter_title }} — {{ title }}</title>
+  {% if description %}<meta name="description" content="{{ description }}">{% endif %}
+  <link rel="icon" type="image/png" href="/static/img/favicon.png">
+  {% if theme_font_family and theme_font_family != "System Default" %}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family={{ theme_font_family | replace(' ', '+') }}:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  {% endif %}
+  <link rel="stylesheet" href="/static/css/page.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="/static/css/book.css?v={{ asset_version }}">
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/{% if theme_dark_mode %}github-dark{% else %}github{% endif %}.min.css">
+  <style>
+    :root {
+      --primary: {{ theme_primary_color }};
+      --secondary: {{ theme_secondary_color }};
+      --accent: {{ theme_accent_color }};
+    }
+    {% if theme_font_family and theme_font_family != "System Default" %}
+    body { font-family: '{{ theme_font_family }}', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    {% endif %}
+  </style>
+  {% if theme_custom_css %}
+  <style id="custom-css">
+{{ theme_custom_css }}
+  </style>
+  {% endif %}
+</head>
+<body class="book-body">
+  {% if header_enabled %}
+  <header class="page-header">
+    <div class="page-header-inner">
+      {% if header_logo_url %}
+      <div class="page-header-logo">
+        {% if header_link_url %}
+        <a href="{{ header_link_url }}" target="_blank" rel="noopener">
+          <img src="{{ header_logo_url }}" alt="{{ header_link_text or title }}">
+        </a>
+        {% else %}
+        <img src="{{ header_logo_url }}" alt="{{ title }}">
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if header_email or header_phone or header_text or header_link_url %}
+      <div class="page-header-info">
+        {% if header_link_url %}
+        <a href="{{ header_link_url }}" target="_blank" rel="noopener" class="page-header-link">{{ header_link_text or header_link_url }}</a>
+        {% endif %}
+        {% if header_email %}
+        <span class="page-header-detail"><a href="mailto:{{ header_email }}">{{ header_email }}</a></span>
+        {% endif %}
+        {% if header_phone %}
+        <span class="page-header-detail"><a href="tel:{{ header_phone }}">{{ header_phone }}</a></span>
+        {% endif %}
+        {% if header_text %}
+        <span class="page-header-detail">{{ header_text }}</span>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+    <hr class="page-header-divider">
+  </header>
+  {% endif %}
+
+  <button id="bookSidebarToggle" class="book-sidebar-toggle" aria-label="Toggle chapters">
+    <span></span><span></span><span></span>
+  </button>
+
+  <div class="book-shell">
+    <aside id="bookSidebar" class="book-sidebar" aria-label="Table of contents">
+      <div class="book-sidebar-header">
+        <h2 class="book-title">{{ title }}</h2>
+        <input
+          id="bookSearch"
+          class="book-search"
+          type="search"
+          placeholder="Search chapters…"
+          aria-label="Search chapters"
+        >
+      </div>
+      <nav class="book-toc">
+        <ol id="bookTocList">
+          {% for chapter in chapters %}
+          <li
+            class="book-toc-item{% if chapter.slug == selected_chapter_slug %} is-active{% endif %}"
+            data-slug="{{ chapter.slug }}"
+            data-title="{{ chapter.title | lower }}"
+          >
+            <a href="/p/{{ slug }}/c/{{ chapter.slug }}">
+              <span class="book-toc-num">{{ loop.index }}</span>
+              <span class="book-toc-title">{{ chapter.title }}</span>
+            </a>
+          </li>
+          {% endfor %}
+        </ol>
+      </nav>
+    </aside>
+
+    <main class="book-main">
+      <article id="bookContent" class="content">
+        {{ selected_chapter_html | safe }}
+      </article>
+
+      <nav id="bookPager" class="book-pager" aria-label="Chapter navigation">
+        <a id="bookPrev" class="book-pager-btn" rel="prev" hidden>← Previous</a>
+        <a id="bookNext" class="book-pager-btn" rel="next" hidden>Next →</a>
+      </nav>
+    </main>
+  </div>
+
+  <footer class="powered-by">
+    <a href="https://www.ambivo.com" target="_blank" rel="noopener">
+      <img src="/static/img/ambivo-logo.png" alt="Ambivo" class="powered-by-logo">
+      <span>Powered by Ambivo</span>
+    </a>
+  </footer>
+
+  <script id="bookChaptersData" type="application/json">{{ chapters | tojson }}</script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script src="/static/js/book-reader.js?v={{ asset_version }}"
+    data-slug="{{ slug }}"
+    data-selected-slug="{{ selected_chapter_slug }}"></script>
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script
+    src="/static/js/chat-widget.js?v={{ asset_version }}"
+    data-presentation-id="{{ presentation_id }}"
+    data-chat-enabled="{{ chat_enabled }}"
+    data-api-base="{{ api_base }}"
+  ></script>
+</body>
+</html>

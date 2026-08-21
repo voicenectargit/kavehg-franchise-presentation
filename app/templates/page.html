@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en"{% if theme_dark_mode %} class="dark"{% endif %}>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }}</title>
+  {% if description %}<meta name="description" content="{{ description }}">{% endif %}
+  <link rel="icon" type="image/png" href="/static/img/favicon.png">
+  {% if theme_font_family and theme_font_family != "System Default" %}
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family={{ theme_font_family | replace(' ', '+') }}:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  {% endif %}
+  <link rel="stylesheet" href="/static/css/page.css?v={{ asset_version }}">
+  {% if content_type != "html" %}
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/{% if theme_dark_mode %}github-dark{% else %}github{% endif %}.min.css">
+  {% endif %}
+  <style>
+    :root {
+      --primary: {{ theme_primary_color }};
+      --secondary: {{ theme_secondary_color }};
+      --accent: {{ theme_accent_color }};
+    }
+    {% if theme_font_family and theme_font_family != "System Default" %}
+    body { font-family: '{{ theme_font_family }}', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+    {% endif %}
+  </style>
+  {% if theme_custom_css %}
+  <style id="custom-css">
+{{ theme_custom_css }}
+  </style>
+  {% endif %}
+</head>
+<body>
+  {% if header_enabled %}
+  <header class="page-header">
+    <div class="page-header-inner">
+      {% if header_logo_url %}
+      <div class="page-header-logo">
+        {% if header_link_url %}
+        <a href="{{ header_link_url }}" target="_blank" rel="noopener">
+          <img src="{{ header_logo_url }}" alt="{{ header_link_text or title }}">
+        </a>
+        {% else %}
+        <img src="{{ header_logo_url }}" alt="{{ title }}">
+        {% endif %}
+      </div>
+      {% endif %}
+      {% if header_email or header_phone or header_text or header_link_url %}
+      <div class="page-header-info">
+        {% if header_link_url %}
+        <a href="{{ header_link_url }}" target="_blank" rel="noopener" class="page-header-link">{{ header_link_text or header_link_url }}</a>
+        {% endif %}
+        {% if header_email %}
+        <span class="page-header-detail"><a href="mailto:{{ header_email }}">{{ header_email }}</a></span>
+        {% endif %}
+        {% if header_phone %}
+        <span class="page-header-detail"><a href="tel:{{ header_phone }}">{{ header_phone }}</a></span>
+        {% endif %}
+        {% if header_text %}
+        <span class="page-header-detail">{{ header_text }}</span>
+        {% endif %}
+      </div>
+      {% endif %}
+    </div>
+    <hr class="page-header-divider">
+  </header>
+  {% endif %}
+
+  {% if content_type == "html" %}
+  {# Inject a viewport meta + responsive media defaults so user-uploaded HTML
+     that wasn't authored for mobile still scales correctly inside the iframe.
+     The trailing resize script reports document height to the parent. #}
+  {% set responsive_head = '<meta name="viewport" content="width=device-width, initial-scale=1.0"><style>html,body{max-width:100%;overflow-x:auto;-webkit-text-size-adjust:100%}img,video,iframe,embed,object,canvas,svg{max-width:100%;height:auto}table{max-width:100%;display:block;overflow-x:auto}pre{max-width:100%;overflow-x:auto}</style>' %}
+  {% set resize_script = '<script>var _cpT;function _cpH(){var d=document,b=d.body,e=d.documentElement;return Math.max(e.scrollHeight,b?b.scrollHeight:0,b?b.offsetHeight:0,e.offsetHeight)}function _cpR(){clearTimeout(_cpT);_cpT=setTimeout(function(){window.parent.postMessage({cpFrameHeight:_cpH()+2},"*")},50)}window.addEventListener("load",_cpR);window.addEventListener("resize",_cpR);try{if(document.fonts&&document.fonts.ready){document.fonts.ready.then(_cpR)}}catch(e){}new MutationObserver(_cpR).observe(document.documentElement,{childList:!0,subtree:!0,attributes:!0});setTimeout(_cpR,300);setTimeout(_cpR,1200)</script>' %}
+  {% if '</head>' in html_content %}
+  {% set framed_html = html_content.replace('</head>', responsive_head + '</head>') %}
+  {% else %}
+  {% set framed_html = responsive_head + html_content %}
+  {% endif %}
+  {% if '</body>' in framed_html %}
+  {% set framed_html = framed_html.replace('</body>', resize_script + '</body>') %}
+  {% else %}
+  {% set framed_html = framed_html + resize_script %}
+  {% endif %}
+  <iframe id="htmlFrame" class="html-frame" sandbox="allow-scripts allow-popups allow-popups-to-escape-sandbox allow-downloads" srcdoc="{{ framed_html | e }}"></iframe>
+  {% else %}
+  <article class="content">
+    {{ html_content | safe }}
+  </article>
+  {% endif %}
+
+  <footer class="powered-by">
+    <a href="https://www.ambivo.com" target="_blank" rel="noopener">
+      <img src="/static/img/ambivo-logo.png" alt="Ambivo" class="powered-by-logo">
+      <span>Powered by Ambivo</span>
+    </a>
+  </footer>
+
+  {% if content_type == "html" %}
+  <script>
+  (function() {
+    var frame = document.getElementById("htmlFrame");
+    window.addEventListener("message", function(e) {
+      if (e.source !== frame.contentWindow) return;
+      if (e.data && typeof e.data.cpFrameHeight === "number") {
+        var h = Math.min(Math.max(e.data.cpFrameHeight, 100), 50000);
+        frame.style.height = h + "px";
+      }
+    });
+  })();
+  </script>
+  {% else %}
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+  <script>hljs.highlightAll();</script>
+  <script>
+  document.querySelectorAll(".content img").forEach(function(img) {
+    img.addEventListener("error", function() { img.classList.add("broken"); });
+    if (img.complete && img.naturalWidth === 0 && img.src) { img.classList.add("broken"); }
+  });
+  </script>
+  {% endif %}
+
+  <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+  <script
+    src="/static/js/chat-widget.js?v={{ asset_version }}"
+    data-presentation-id="{{ presentation_id }}"
+    data-chat-enabled="{{ chat_enabled }}"
+    data-api-base="{{ api_base }}"
+  ></script>
+</body>
+</html>
