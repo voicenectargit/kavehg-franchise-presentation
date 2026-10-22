@@ -4,7 +4,12 @@ Configuration settings for Content Portal
 import logging
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.ssm_env import load_ssm_into_environ
+
 logger = logging.getLogger(__name__)
+
+# Before Settings is built: on Railway the secrets come from SSM, not the environment.
+load_ssm_into_environ()
 
 
 class Settings(BaseSettings):

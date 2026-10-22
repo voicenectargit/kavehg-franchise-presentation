@@ -13,3 +13,4 @@ python-multipart>=0.0.9
 markdownify>=0.13.0
 anthropic>=0.40.0
 markitdown[pdf,pptx,docx]>=0.1.5
+boto3>=1.34,<2
