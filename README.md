@@ -302,7 +302,7 @@ ambivo-content-portal/
 │           ├── dashboard.js         # Auth guard, list, create/edit, tags, preview
 │           └── chat-widget.js       # Floating chat bubble + SSE streaming
 ├── Dockerfile
-├── railway.json
+├── .railway/railway.ts      # Railway service settings
 ├── requirements.txt
 └── .env.example
 ```
@@ -459,7 +459,7 @@ The hosted page includes a vanilla JS chat widget (no dependencies):
 railway up
 ```
 
-Uses the included `Dockerfile` and `railway.json`. Set environment variables in the Railway dashboard.
+Uses the included `Dockerfile`. Service settings live in `.railway/railway.ts`; apply changes with `railway config plan`, then `railway config apply`. Set environment variables in the Railway dashboard.
 
 ### Docker
 
