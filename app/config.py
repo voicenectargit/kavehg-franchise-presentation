@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     vectordb_api_url: str = "https://vectordbapi.ambivo.com"
     ambivo_internal_secret: str = ""
 
-    # Core API (ambivo_api) — for login proxy
+    # Core API (ambivo_api): login proxy, GenAI quota, and AI page generation (/genai/complete)
     ambivo_api_url: str = "https://goferapi.ambivo.com"
 
     # Chat limits
@@ -43,10 +43,6 @@ class Settings(BaseSettings):
     # Requests beyond this queue for a free slot instead of piling onto the
     # inferencing backend. Tune up/down to match backend capacity.
     max_concurrent_chats: int = 4
-
-    # AI page generation (Anthropic)
-    anthropic_api_key: str = ""
-    ai_model: str = "claude-sonnet-4-20250514"
 
     # Logging
     log_level: str = "INFO"

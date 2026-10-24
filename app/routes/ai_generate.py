@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from app.auth.jwt_auth import get_current_user
 from app.services import ai_generator_service
+from app.services.ai_generator_service import AIRefusedError
 from app.services.quota_service import check_genai_quota
 from app.config import settings
 
@@ -41,8 +42,8 @@ class DirectGenerateRequest(BaseModel):
 
 async def _enforce_quota(tenant_id: str) -> None:
     """Check GenAI quota; raise 402/503 on failure."""
-    if not settings.anthropic_api_key:
-        raise HTTPException(status_code=503, detail="AI generation is not available on this instance.")
+    if not settings.ambivo_internal_secret:
+        raise HTTPException(status_code=503, detail="AI page generation is turned off on this server.")
 
     quota = await check_genai_quota(tenant_id)
     if not quota.get("allowed", True):
@@ -68,8 +69,8 @@ async def check_ai_available(
     Returns {"available": true/false, "reason": "..."}.
     Used by the frontend to show/hide the AI Generate button.
     """
-    if not settings.anthropic_api_key:
-        return {"available": False, "reason": "AI generation is not configured on this instance."}
+    if not settings.ambivo_internal_secret:
+        return {"available": False, "reason": "AI page generation is turned off on this server."}
 
     tenant_id = user["tenant_id"]
     quota = await check_genai_quota(tenant_id)
@@ -95,7 +96,9 @@ async def start_generation(
     await _enforce_quota(tenant_id)
 
     try:
-        return await ai_generator_service.start_session(data.prompt.strip(), tenant_id)
+        return await ai_generator_service.start_session(data.prompt.strip(), tenant_id, user.get("userid"))
+    except AIRefusedError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception:
@@ -119,13 +122,16 @@ async def answer_questions(
     await _enforce_quota(tenant_id)
 
     try:
-        result = await ai_generator_service.answer_questions(session_id, data.answers, tenant_id)
+        result = await ai_generator_service.answer_questions(session_id, data.answers, tenant_id,
+                                                             user.get("userid"))
         # Clean up session when complete
         if result.get("status") == "complete":
             ai_generator_service.cleanup_session(session_id, tenant_id)
         return result
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except AIRefusedError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception:
@@ -149,7 +155,9 @@ async def generate_direct(
     await _enforce_quota(tenant_id)
 
     try:
-        return await ai_generator_service.generate_direct(data.prompt.strip(), tenant_id)
+        return await ai_generator_service.generate_direct(data.prompt.strip(), tenant_id, user.get("userid"))
+    except AIRefusedError as e:
+        raise HTTPException(status_code=e.status_code, detail=str(e))
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except Exception:

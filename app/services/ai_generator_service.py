@@ -1,20 +1,20 @@
 """
 AI-powered HTML page generator.
 
-Uses Anthropic Claude to conduct a brief design interview, then generates
-a complete, self-contained HTML page.  Quota is enforced *before* every LLM
-call via quota_service.check_genai_quota().
+Conducts a brief design interview, then generates a complete, self-contained
+HTML page.  Every model call goes through Core's POST /genai/complete with the
+internal secret, so Core picks the model (tier "standard"), enforces quota and
+bills the tenant, and a tenant on its own AI keys is served by its gateway.
+The routes also check quota first via quota_service.check_genai_quota().
 
 Sessions are kept in-memory (dict keyed by session_id).  They're lightweight
 and ephemeral — if the process restarts, users just start a new session.
 """
-import asyncio
 import json
 import logging
 import secrets
 from datetime import datetime, timezone
 
-import anthropic
 import httpx
 
 from app.config import settings
@@ -97,80 +97,75 @@ Requirements for the generated HTML:
 Return ONLY the raw HTML (starting with <!DOCTYPE html>), no markdown fences, no explanation."""
 
 
-# ── Token usage reporting ────────────────────────────────────────────────
+# ── LLM call (Core /genai/complete) ──────────────────────────────────────
 
-async def _report_token_usage(tenant_id: str, input_tokens: int, output_tokens: int) -> None:
-    """Report token usage to ambivo_api for billing (fire-and-forget)."""
-    url = f"{settings.ambivo_api_url}/genai/report_usage"
-    try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            await client.post(
-                url,
-                headers={"X-Internal-API-Key": settings.ambivo_internal_secret},
-                json={
-                    "tenant_id": tenant_id,
-                    "source": "content_portal",
-                    "input_tokens": input_tokens,
-                    "output_tokens": output_tokens,
-                },
-            )
-    except httpx.HTTPError as exc:
-        logger.warning("Failed to report token usage: %s", exc)
-    except Exception as exc:
-        logger.error("Unexpected error reporting token usage: %s", exc)
+# Core stops a completion at 110 s and answers first; the extra seconds cover the network.
+_CORE_TIMEOUT = httpx.Timeout(10.0, read=125.0)
+_CALLER = "content_portal:page_generator"
 
 
-# ── LLM call ─────────────────────────────────────────────────────────────
+class AIRefusedError(RuntimeError):
+    """Core refused the call for a reason the user can act on (quota, payment)."""
 
-# Lazily-initialized shared Anthropic client
-_anthropic_client: anthropic.AsyncAnthropic | None = None
-
-
-def _get_client() -> anthropic.AsyncAnthropic:
-    """Return a shared AsyncAnthropic client (created once)."""
-    global _anthropic_client
-    if _anthropic_client is None:
-        _anthropic_client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key)
-    return _anthropic_client
+    def __init__(self, message: str, status_code: int = 402):
+        super().__init__(message)
+        self.status_code = status_code
 
 
 async def _call_llm(
     system: str,
     messages: list[dict],
     tenant_id: str,
+    user_id: str | None = None,
     temperature: float = 0.3,
     max_tokens: int = 4096,
 ) -> str:
-    """Call Anthropic Claude and return the text response."""
-    if not settings.anthropic_api_key:
-        raise RuntimeError("AI generation is not configured (ANTHROPIC_API_KEY missing)")
+    """One completion through Core. Returns the text; raises RuntimeError on failure."""
+    if not settings.ambivo_internal_secret:
+        raise RuntimeError("AI page generation is turned off on this server.")
 
-    client = _get_client()
+    headers = {
+        "X-AMBIVO-INTERNAL-SECRET": settings.ambivo_internal_secret,
+        "X-AMBIVO-TENANT-ID": tenant_id,
+    }
+    if user_id:
+        headers["X-AMBIVO-USER-ID"] = user_id
+    body = {
+        "messages": [{"role": "system", "content": system}] + messages,
+        "max_tokens": max_tokens,
+        "temperature": temperature,
+        "tier": "standard",
+        "caller": _CALLER,
+    }
+    url = f"{settings.ambivo_api_url.rstrip('/')}/genai/complete"
     try:
-        resp = await client.messages.create(
-            model=settings.ai_model,
-            max_tokens=max_tokens,
-            temperature=temperature,
-            system=system,
-            messages=messages,
-        )
-        # Report token usage in background (truly fire-and-forget)
-        usage = resp.usage
-        asyncio.create_task(_report_token_usage(tenant_id, usage.input_tokens, usage.output_tokens))
+        async with httpx.AsyncClient(timeout=_CORE_TIMEOUT) as client:
+            resp = await client.post(url, headers=headers, json=body)
+        resp.raise_for_status()
+        data = resp.json()
+    except httpx.TimeoutException:
+        logger.warning("genai/complete timed out tenant=%s", tenant_id)
+        raise RuntimeError("The page took too long to make. Try again, or use a shorter description.")
+    except (httpx.HTTPError, ValueError) as exc:
+        logger.error("genai/complete failed tenant=%s: %r", tenant_id, exc)
+        raise RuntimeError("AI page generation failed. Try again.")
 
-        return resp.content[0].text
-    except anthropic.AuthenticationError:
-        raise RuntimeError("AI service authentication failed — check ANTHROPIC_API_KEY")
-    except anthropic.RateLimitError:
-        raise RuntimeError("AI service rate limit reached — please try again in a moment")
-    except anthropic.APIError as exc:
-        logger.error("Anthropic API error: %s", exc)
-        raise RuntimeError("AI service encountered an error — please try again")
+    if data.get("result") == 1:
+        return data.get("text") or ""
+
+    code = data.get("error_code") or ""
+    logger.warning("genai/complete refused tenant=%s code=%s message=%s",
+                   tenant_id, code, data.get("message"))
+    if code == "GENAI_QUOTA_BLOCKED":
+        raise AIRefusedError(data.get("message") or "Add a payment method to use AI page generation.")
+    if code == "GENAI_TIMEOUT":
+        raise RuntimeError("The page took too long to make. Try again, or use a shorter description.")
+    raise RuntimeError("AI page generation failed. Try again.")
 
 
 # ── Public API ───────────────────────────────────────────────────────────
 
-async def start_session(prompt: str, tenant_id: str) -> dict:
+async def start_session(prompt: str, tenant_id: str, user_id: str | None = None) -> dict:
     """Start a new AI generation session.  Returns session_id + first questions."""
     _evict_stale_sessions()
 
@@ -182,6 +177,7 @@ async def start_session(prompt: str, tenant_id: str) -> dict:
         system=_interview_system_prompt(),
         messages=messages,
         tenant_id=tenant_id,
+        user_id=user_id,
         temperature=0.3,
     )
 
@@ -190,6 +186,7 @@ async def start_session(prompt: str, tenant_id: str) -> dict:
 
     _sessions[session_id] = {
         "tenant_id": tenant_id,
+        "user_id": user_id,
         "prompt": prompt,
         "messages": messages + [{"role": "assistant", "content": raw}],
         "round": 1,
@@ -206,7 +203,8 @@ async def start_session(prompt: str, tenant_id: str) -> dict:
     }
 
 
-async def answer_questions(session_id: str, answers: list[str], tenant_id: str) -> dict:
+async def answer_questions(session_id: str, answers: list[str], tenant_id: str,
+                           user_id: str | None = None) -> dict:
     """Continue the interview with user answers.
 
     Returns more questions (status=interviewing) or triggers HTML generation
@@ -243,6 +241,7 @@ async def answer_questions(session_id: str, answers: list[str], tenant_id: str) 
         system=_interview_system_prompt(),
         messages=trial_messages,
         tenant_id=tenant_id,
+        user_id=user_id,
         temperature=0.3,
     )
 
@@ -280,7 +279,7 @@ async def answer_questions(session_id: str, answers: list[str], tenant_id: str) 
     }
 
 
-async def generate_direct(prompt: str, tenant_id: str) -> dict:
+async def generate_direct(prompt: str, tenant_id: str, user_id: str | None = None) -> dict:
     """Skip the interview and generate HTML directly from a detailed prompt."""
     messages = [
         {
@@ -293,6 +292,7 @@ async def generate_direct(prompt: str, tenant_id: str) -> dict:
         system=_generation_system_prompt(),
         messages=messages,
         tenant_id=tenant_id,
+        user_id=user_id,
         temperature=0.2,
         max_tokens=16000,
     )
@@ -352,6 +352,7 @@ async def _generate_html(session: dict) -> str:
         system=_generation_system_prompt(),
         messages=gen_messages,
         tenant_id=session["tenant_id"],
+        user_id=session.get("user_id"),
         temperature=0.2,
         max_tokens=16000,
     )
