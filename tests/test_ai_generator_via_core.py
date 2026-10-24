@@ -123,10 +123,7 @@ def test_interview_keeps_the_user_for_the_final_generation(core):
     assert [c.headers["X-AMBIVO-USER-ID"] for c in core["calls"]] == ["u1", "u1", "u1"]
 
 
-def test_route_maps_a_quota_refusal_to_402(core, monkeypatch):
-    async def allowed(tenant_id):
-        return {"allowed": True}
-    monkeypatch.setattr(ai_generate, "check_genai_quota", allowed)
+def test_route_maps_a_quota_refusal_to_402(core):
     core["handler"] = lambda req: httpx.Response(200, json={
         "result": 2, "error_code": "GENAI_QUOTA_BLOCKED", "message": "Add a payment method."})
     with pytest.raises(HTTPException) as ex:
@@ -136,9 +133,23 @@ def test_route_maps_a_quota_refusal_to_402(core, monkeypatch):
 
 
 def test_availability_needs_only_the_internal_secret(core, monkeypatch):
-    async def allowed(tenant_id):
-        return {"allowed": True}
-    monkeypatch.setattr(ai_generate, "check_genai_quota", allowed)
     assert _run(ai_generate.check_ai_available({"tenant_id": "t1"})) == {"available": True}
     monkeypatch.setattr(settings, "ambivo_internal_secret", "")
     assert _run(ai_generate.check_ai_available({"tenant_id": "t1"}))["available"] is False
+
+
+def test_routes_leave_the_quota_decision_to_core(core, monkeypatch):
+    """A tenant on its own AI keys may have no payment method. Core serves it through
+    its gateway, so the portal must not refuse it first with /genai/check_quota."""
+    from app.services import quota_service
+
+    async def refuse(*a, **kw):
+        raise AssertionError("AI page generation must not call /genai/check_quota")
+    monkeypatch.setattr(quota_service, "check_genai_quota", refuse)
+    core["handler"] = lambda req: httpx.Response(200, json={"result": 1, "text": "<!DOCTYPE html>",
+                                                            "via_gateway": True})
+    user = {"tenant_id": "byok", "userid": "u1"}
+    assert _run(ai_generate.check_ai_available(user)) == {"available": True}
+    out = _run(ai_generate.generate_direct(ai_generate.DirectGenerateRequest(prompt="p"), user))
+    assert out["html"] == "<!DOCTYPE html>"
+    assert [str(c.url) for c in core["calls"]] == ["https://core.test/genai/complete"]

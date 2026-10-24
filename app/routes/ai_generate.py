@@ -1,8 +1,12 @@
 """
 AI HTML page generation routes.
 
-All endpoints require authentication and enforce GenAI quota before
-every LLM call.  Returns 402 if the tenant has no GenAI access.
+All endpoints require authentication.  Core's /genai/complete decides, per
+tenant and per call, how the call is served: a tenant on its own AI keys goes
+through its own gateway; any other tenant uses Ambivo's keys, with Core's quota
+and billing.  There is no pre-check here: Core's /genai/check_quota does not
+know about a tenant's own keys, so it would refuse a tenant Core would serve.
+A quota refusal from Core comes back as 402.
 """
 import logging
 import re
@@ -14,7 +18,6 @@ from pydantic import BaseModel, Field
 from app.auth.jwt_auth import get_current_user
 from app.services import ai_generator_service
 from app.services.ai_generator_service import AIRefusedError
-from app.services.quota_service import check_genai_quota
 from app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -40,16 +43,10 @@ class DirectGenerateRequest(BaseModel):
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
-async def _enforce_quota(tenant_id: str) -> None:
-    """Check GenAI quota; raise 402/503 on failure."""
+def _require_configured() -> None:
+    """503 when this server cannot reach Core's AI."""
     if not settings.ambivo_internal_secret:
         raise HTTPException(status_code=503, detail="AI page generation is turned off on this server.")
-
-    quota = await check_genai_quota(tenant_id)
-    if not quota.get("allowed", True):
-        detail = quota.get("error", "GenAI quota exhausted. Please add a payment method.")
-        code = 402 if quota.get("error_code") == "PAYMENT_REQUIRED" else 429
-        raise HTTPException(status_code=code, detail=detail)
 
 
 def _validate_session_id(session_id: str) -> None:
@@ -64,19 +61,15 @@ def _validate_session_id(session_id: str) -> None:
 async def check_ai_available(
     user: Dict[str, Any] = Depends(get_current_user),
 ):
-    """Check if AI generation is available for this tenant.
+    """Check if AI generation is available on this server.
+
+    Quota is decided by Core on each call (see the module docstring).
 
     Returns {"available": true/false, "reason": "..."}.
     Used by the frontend to show/hide the AI Generate button.
     """
     if not settings.ambivo_internal_secret:
         return {"available": False, "reason": "AI page generation is turned off on this server."}
-
-    tenant_id = user["tenant_id"]
-    quota = await check_genai_quota(tenant_id)
-    if not quota.get("allowed", True):
-        reason = quota.get("error", "GenAI quota exhausted.")
-        return {"available": False, "reason": reason}
 
     return {"available": True}
 
@@ -93,7 +86,7 @@ async def start_generation(
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
 
     tenant_id = user["tenant_id"]
-    await _enforce_quota(tenant_id)
+    _require_configured()
 
     try:
         return await ai_generator_service.start_session(data.prompt.strip(), tenant_id, user.get("userid"))
@@ -119,7 +112,7 @@ async def answer_questions(
     """
     _validate_session_id(session_id)
     tenant_id = user["tenant_id"]
-    await _enforce_quota(tenant_id)
+    _require_configured()
 
     try:
         result = await ai_generator_service.answer_questions(session_id, data.answers, tenant_id,
@@ -152,7 +145,7 @@ async def generate_direct(
         raise HTTPException(status_code=400, detail="Prompt cannot be empty")
 
     tenant_id = user["tenant_id"]
-    await _enforce_quota(tenant_id)
+    _require_configured()
 
     try:
         return await ai_generator_service.generate_direct(data.prompt.strip(), tenant_id, user.get("userid"))

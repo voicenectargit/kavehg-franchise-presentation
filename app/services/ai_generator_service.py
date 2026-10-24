@@ -5,7 +5,7 @@ Conducts a brief design interview, then generates a complete, self-contained
 HTML page.  Every model call goes through Core's POST /genai/complete with the
 internal secret, so Core picks the model (tier "standard"), enforces quota and
 bills the tenant, and a tenant on its own AI keys is served by its gateway.
-The routes also check quota first via quota_service.check_genai_quota().
+Core decides that per tenant on every call; nothing here pre-checks quota.
 
 Sessions are kept in-memory (dict keyed by session_id).  They're lightweight
 and ephemeral — if the process restarts, users just start a new session.
