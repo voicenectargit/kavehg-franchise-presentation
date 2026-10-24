@@ -2,7 +2,8 @@
 AI-powered HTML page generator.
 
 Conducts a brief design interview, then generates a complete, self-contained
-HTML page.  Every model call goes through Core's POST /genai/complete with the
+HTML page: one call plans it, then its sections are written a few per call
+(see _build_page).  Every model call goes through Core's POST /genai/complete with the
 internal secret, so Core picks the model (tier "standard"), enforces quota and
 bills the tenant, and a tenant on its own AI keys is served by its gateway.
 Core decides that per tenant on every call; nothing here pre-checks quota.
@@ -10,8 +11,10 @@ Core decides that per tenant on every call; nothing here pre-checks quota.
 Sessions are kept in-memory (dict keyed by session_id).  They're lightweight
 and ephemeral — if the process restarts, users just start a new session.
 """
+import asyncio
 import json
 import logging
+import re
 import secrets
 from datetime import datetime, timezone
 
@@ -76,25 +79,89 @@ If status is "ready", questions should be empty and the summary must be comprehe
 enough to generate a complete HTML page."""
 
 
-def _generation_system_prompt() -> str:
+# A page is written in pieces. Core stops one completion at 110 s, and a full page
+# in one reply took longer than that. One call plans the page (head, shared design
+# notes, sections); then the sections are written a few per call, in parallel;
+# then the page is put together here.
+
+_MAX_SECTIONS = 12
+_SECTIONS_PER_CALL = 2
+_PARALLEL_SECTION_CALLS = 3
+_PLAN_MAX_TOKENS = 4000
+_SECTION_MAX_TOKENS = 6000
+
+_PLAN_SCHEMA = {
+    "type": "object",
+    "required": ["title", "head_html", "design_notes", "sections"],
+    "properties": {
+        "title": {"type": "string"},
+        "lang": {"type": "string"},
+        "body_class": {"type": "string"},
+        "head_html": {"type": "string"},
+        "design_notes": {"type": "string"},
+        "sections": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": _MAX_SECTIONS,
+            "items": {
+                "type": "object",
+                "required": ["id", "name", "brief"],
+                "properties": {
+                    "id": {"type": "string"},
+                    "name": {"type": "string"},
+                    "brief": {"type": "string"},
+                },
+            },
+        },
+    },
+}
+
+
+def _plan_system_prompt() -> str:
     current_year = datetime.now().year
-    return f"""You are an expert web designer. Generate a **complete, self-contained HTML page**
-based on the design conversation below.
+    return f"""You are an expert web designer planning a single, self-contained HTML page.
+The page will be written section by section by other designers who see only your plan,
+so the plan must carry everything they need to make the sections look like one page.
 
-Requirements for the generated HTML:
-1. Use Tailwind CSS via CDN (<script src="https://cdn.tailwindcss.com"></script>).
-2. Include Google Fonts via <link> if a specific font is desired.
-3. The page must be fully responsive (mobile-first).
-4. Use a clean, modern design with proper spacing and visual hierarchy.
-5. Include smooth scroll behavior and subtle hover/transition effects.
-6. Use semantic HTML (header, main, section, footer).
-7. All styles must be inline or via Tailwind — no external CSS files.
-8. Use placeholder images from https://placehold.co/ if real images aren't provided.
-9. If a logo URL was provided, use it; otherwise use text-only branding.
-10. Include a © {current_year} copyright in the footer.
-11. The HTML must be completely self-contained — a single file that works when opened in a browser.
+Return a JSON object:
+- "title": the page <title>.
+- "lang": the page language code, e.g. "en".
+- "body_class": Tailwind classes for <body> (background, text color, font).
+- "head_html": everything inside <head>: meta charset and viewport, <title>,
+  <script src="https://cdn.tailwindcss.com"></script>, a tailwind.config script with the
+  brand colors and fonts, Google Fonts <link> tags if a font is wanted, and a small <style>
+  with `html {{ scroll-behavior: smooth; }}`. No external CSS files.
+- "design_notes": the shared visual rules every section must follow: colors (as the
+  Tailwind names you configured), fonts, heading sizes, spacing, container width, button
+  and card styles, image style, tone of the copy.
+- "sections": the page from top to bottom, at most {_MAX_SECTIONS}. Each has "id" (a short
+  lowercase anchor such as "hero" or "pricing"), "name", and "brief": what the section
+  contains, in enough detail to write it, including real copy where the user gave it.
+  The first section is the header with navigation; the last is the footer, which
+  includes a © {current_year} copyright.
 
-Return ONLY the raw HTML (starting with <!DOCTYPE html>), no markdown fences, no explanation."""
+Design rules: responsive and mobile-first, clean and modern, semantic HTML, subtle hover
+and transition effects, placeholder images from https://placehold.co/ when no real images
+are given, the user's logo URL if given, otherwise text-only branding."""
+
+
+def _section_system_prompt(plan: dict) -> str:
+    anchors = ", ".join(f"#{s['id']} ({s['name']})" for s in plan["sections"])
+    return f"""You are an expert web designer writing part of one HTML page that uses
+Tailwind CSS from its CDN (already loaded, with this configuration in <head>):
+
+{plan.get("head_html", "")}
+
+Shared design rules for every section:
+{plan.get("design_notes", "")}
+
+The page's sections, top to bottom (links between them use these anchors): {anchors}
+
+Write ONLY the sections you are asked for, in order, as raw HTML fragments. Use
+<header> for the header, <footer> for the footer and <section> for the rest, each with
+its id attribute set to its anchor. No <!DOCTYPE>, <html>, <head> or <body>, no markdown
+fences, no explanation. Only Tailwind classes and inline styles; a small inline <script>
+is fine when a section needs one (a mobile menu, an FAQ toggle)."""
 
 
 # ── LLM call (Core /genai/complete) ──────────────────────────────────────
@@ -121,6 +188,20 @@ async def _call_llm(
     max_tokens: int = 4096,
 ) -> str:
     """One completion through Core. Returns the text; raises RuntimeError on failure."""
+    data = await _complete(system, messages, tenant_id, user_id, temperature, max_tokens)
+    return data.get("text") or ""
+
+
+async def _complete(
+    system: str,
+    messages: list[dict],
+    tenant_id: str,
+    user_id: str | None = None,
+    temperature: float = 0.3,
+    max_tokens: int = 4096,
+    output_schema: dict | None = None,
+) -> dict:
+    """One completion through Core. Returns Core's answer (text, json, schema_valid)."""
     if not settings.ambivo_internal_secret:
         raise RuntimeError("AI page generation is turned off on this server.")
 
@@ -137,6 +218,8 @@ async def _call_llm(
         "tier": "standard",
         "caller": _CALLER,
     }
+    if output_schema is not None:
+        body["output_schema"] = output_schema
     url = f"{settings.ambivo_api_url.rstrip('/')}/genai/complete"
     try:
         async with httpx.AsyncClient(timeout=_CORE_TIMEOUT) as client:
@@ -151,7 +234,7 @@ async def _call_llm(
         raise RuntimeError("AI page generation failed. Try again.")
 
     if data.get("result") == 1:
-        return data.get("text") or ""
+        return data
 
     code = data.get("error_code") or ""
     logger.warning("genai/complete refused tenant=%s code=%s message=%s",
@@ -281,23 +364,7 @@ async def answer_questions(session_id: str, answers: list[str], tenant_id: str,
 
 async def generate_direct(prompt: str, tenant_id: str, user_id: str | None = None) -> dict:
     """Skip the interview and generate HTML directly from a detailed prompt."""
-    messages = [
-        {
-            "role": "user",
-            "content": f"Generate a complete HTML page based on this description:\n\n{prompt}",
-        }
-    ]
-
-    html = await _call_llm(
-        system=_generation_system_prompt(),
-        messages=messages,
-        tenant_id=tenant_id,
-        user_id=user_id,
-        temperature=0.2,
-        max_tokens=16000,
-    )
-
-    html = _clean_html_response(html)
+    html = await _build_page(f"Make a page from this description:\n\n{prompt}", tenant_id, user_id)
     return {"status": "complete", "html": html}
 
 
@@ -332,8 +399,7 @@ async def _generate_html(session: dict) -> str:
         f"Design summary: {session['summary']}"
     )
 
-    # Build a proper alternating-role message sequence for the generation call.
-    # Start with a single user message containing the summary + full conversation.
+    # The summary and the whole conversation become the brief for _build_page.
     combined_parts = [conversation_summary, "\n\n--- Design conversation ---\n"]
     for msg in session["messages"]:
         role_label = "Designer" if msg["role"] == "assistant" else "User"
@@ -341,23 +407,95 @@ async def _generate_html(session: dict) -> str:
 
     combined_parts.append(
         "\n\n--- End of conversation ---\n\n"
-        "Based on everything discussed above, please generate the complete HTML page now."
+        "Make the page from everything discussed above."
     )
 
-    gen_messages = [
-        {"role": "user", "content": "\n".join(combined_parts)},
-    ]
+    return await _build_page("\n".join(combined_parts), session["tenant_id"], session.get("user_id"))
 
-    html = await _call_llm(
-        system=_generation_system_prompt(),
-        messages=gen_messages,
-        tenant_id=session["tenant_id"],
-        user_id=session.get("user_id"),
+
+async def _build_page(brief: str, tenant_id: str, user_id: str | None) -> str:
+    """Plan the page, write its sections a few at a time, and put it together."""
+    plan = await _plan_page(brief, tenant_id, user_id)
+    sections = plan["sections"]
+    groups = [sections[i:i + _SECTIONS_PER_CALL] for i in range(0, len(sections), _SECTIONS_PER_CALL)]
+    gate = asyncio.Semaphore(_PARALLEL_SECTION_CALLS)
+
+    async def write(group: list[dict]) -> str:
+        async with gate:
+            return await _write_sections(plan, group, brief, tenant_id, user_id)
+
+    parts = await asyncio.gather(*(write(g) for g in groups))
+    logger.info("page generated tenant=%s sections=%d calls=%d", tenant_id, len(sections), len(groups) + 1)
+    return _assemble(plan, parts)
+
+
+async def _plan_page(brief: str, tenant_id: str, user_id: str | None) -> dict:
+    data = await _complete(
+        system=_plan_system_prompt(),
+        messages=[{"role": "user", "content": brief}],
+        tenant_id=tenant_id,
+        user_id=user_id,
         temperature=0.2,
-        max_tokens=16000,
+        max_tokens=_PLAN_MAX_TOKENS,
+        output_schema=_PLAN_SCHEMA,
     )
+    plan = data.get("json")
+    if not data.get("schema_valid") or not isinstance(plan, dict):
+        logger.warning("page plan did not match the schema tenant=%s errors=%s",
+                       tenant_id, data.get("schema_errors"))
+        raise RuntimeError("AI page generation failed. Try again.")
+    plan["sections"] = plan["sections"][:_MAX_SECTIONS]
+    for i, sec in enumerate(plan["sections"]):
+        sec["id"] = re.sub(r"[^a-z0-9-]", "", str(sec.get("id") or "").lower()) or f"section-{i + 1}"
+    return plan
 
-    return _clean_html_response(html)
+
+async def _write_sections(plan: dict, group: list[dict], brief: str,
+                          tenant_id: str, user_id: str | None) -> str:
+    """HTML for some sections. One retry, since one failed part would lose the whole page."""
+    wanted = "\n\n".join(f"#{s['id']}: {s['name']}\n{s['brief']}" for s in group)
+    messages = [{"role": "user", "content": (
+        f"What the page is for:\n{brief}\n\n--- Write these sections now ---\n\n{wanted}")}]
+    for attempt in (1, 2):
+        try:
+            text = await _call_llm(
+                system=_section_system_prompt(plan),
+                messages=messages,
+                tenant_id=tenant_id,
+                user_id=user_id,
+                temperature=0.2,
+                max_tokens=_SECTION_MAX_TOKENS,
+            )
+            return _clean_fragment(text)
+        except AIRefusedError:
+            raise
+        except RuntimeError:
+            if attempt == 2:
+                raise
+            logger.warning("section call failed, retrying tenant=%s sections=%s",
+                           tenant_id, [s["id"] for s in group])
+
+
+def _assemble(plan: dict, parts: list[str]) -> str:
+    head = plan.get("head_html") or ""
+    if "cdn.tailwindcss.com" not in head:
+        head = '<script src="https://cdn.tailwindcss.com"></script>\n' + head
+    if "charset" not in head.lower():
+        head = '<meta charset="UTF-8">\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\n' + head
+    lang = re.sub(r"[^A-Za-z-]", "", str(plan.get("lang") or "en")) or "en"
+    body_class = str(plan.get("body_class") or "").replace('"', "")
+    body = "\n\n".join(p for p in parts if p)
+    return (f'<!DOCTYPE html>\n<html lang="{lang}">\n<head>\n{head}\n</head>\n'
+            f'<body class="{body_class}">\n{body}\n</body>\n</html>')
+
+
+_WRAPPER_TAGS = re.compile(r"<!DOCTYPE[^>]*>|</?html[^>]*>|<head\b.*?</head>|</?body[^>]*>",
+                           re.IGNORECASE | re.DOTALL)
+
+
+def _clean_fragment(text: str) -> str:
+    """Strip fences and any page wrapper a section reply added."""
+    return _WRAPPER_TAGS.sub("", _clean_html_response(text)).strip()
 
 
 def _clean_html_response(text: str) -> str:

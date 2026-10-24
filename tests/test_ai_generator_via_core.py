@@ -102,25 +102,121 @@ def test_no_internal_secret_means_turned_off(core, monkeypatch):
     assert core["calls"] == []
 
 
-def test_direct_generation_returns_clean_html(core):
-    core["handler"] = lambda req: httpx.Response(200, json={
-        "result": 1, "text": "```html\n<!DOCTYPE html><p>x</p>\n```"})
+def _plan(n=3):
+    secs = [{"id": "header", "name": "Header", "brief": "nav"}]
+    secs += [{"id": f"s{i}", "name": f"Part {i}", "brief": f"part {i}"} for i in range(1, n - 1)]
+    secs += [{"id": "footer", "name": "Footer", "brief": "copyright"}]
+    return {"title": "T", "lang": "en", "body_class": "bg-white",
+            "head_html": '<meta charset="UTF-8"><title>T</title><script src="https://cdn.tailwindcss.com"></script>',
+            "design_notes": "blue buttons", "sections": secs}
+
+
+def _page_core(core, plan, fail_first=()):
+    """Plan calls (output_schema) get the plan; section calls echo their anchors."""
+    seen = {}
+
+    def handler(req):
+        body = json.loads(req.content)
+        if "output_schema" in body:
+            return httpx.Response(200, json={"result": 1, "json": plan, "schema_valid": True, "text": ""})
+        ask = body["messages"][-1]["content"].split("--- Write these sections now ---")[1]
+        ids = [line[1:].split(":")[0] for line in ask.split("\n") if line.startswith("#")]
+        key = ",".join(ids)
+        seen[key] = seen.get(key, 0) + 1
+        if key in fail_first and seen[key] == 1:
+            return httpx.Response(200, json={"result": 2, "error_code": "GENAI_TIMEOUT"})
+        html = "".join(f'<section id="{i}">{i}</section>' for i in ids)
+        return httpx.Response(200, json={"result": 1, "text": "```html\n" + html + "\n```"})
+    core["handler"] = handler
+    return seen
+
+
+def test_direct_generation_plans_then_writes_sections_in_order(core):
+    _page_core(core, _plan(5))
     out = _run(svc.generate_direct("a page", "t1", "u1"))
-    assert out == {"status": "complete", "html": "<!DOCTYPE html><p>x</p>"}
-    assert json.loads(core["calls"][0].content)["max_tokens"] == 16000
+    html = out["html"]
+    assert out["status"] == "complete"
+    assert html.startswith('<!DOCTYPE html>\n<html lang="en">')
+    assert '<body class="bg-white">' in html and "cdn.tailwindcss.com" in html
+    ids = ["header", "s1", "s2", "s3", "footer"]
+    assert [html.index(f'id="{i}"') for i in ids] == sorted(html.index(f'id="{i}"') for i in ids)
+    assert "```" not in html
+    bodies = [json.loads(c.content) for c in core["calls"]]
+    assert "output_schema" in bodies[0] and bodies[0]["max_tokens"] == svc._PLAN_MAX_TOKENS
+    # 5 sections, 2 per call: 3 section calls, each well under Core's limit
+    assert len(bodies) == 4
+    assert all(b["max_tokens"] == svc._SECTION_MAX_TOKENS for b in bodies[1:])
+    assert all(c.headers["X-AMBIVO-USER-ID"] == "u1" for c in core["calls"])
 
 
-def test_interview_keeps_the_user_for_the_final_generation(core):
+def test_every_section_call_gets_the_shared_design(core):
+    _page_core(core, _plan(4))
+    _run(svc.generate_direct("a page", "t1"))
+    for c in core["calls"][1:]:
+        system = json.loads(c.content)["messages"][0]["content"]
+        assert "blue buttons" in system and "#footer (Footer)" in system and "cdn.tailwindcss.com" in system
+
+
+def test_a_failed_section_call_is_retried_once(core):
+    seen = _page_core(core, _plan(4), fail_first=("header,s1",))
+    out = _run(svc.generate_direct("a page", "t1"))
+    assert seen["header,s1"] == 2 and 'id="s1"' in out["html"]
+
+
+def test_a_section_that_fails_twice_fails_the_page(core):
+    plan = _plan(4)
+
+    def handler(req):
+        body = json.loads(req.content)
+        if "output_schema" in body:
+            return httpx.Response(200, json={"result": 1, "json": plan, "schema_valid": True})
+        return httpx.Response(200, json={"result": 2, "error_code": "GENAI_PROVIDER_ERROR"})
+    core["handler"] = handler
+    with pytest.raises(RuntimeError, match="failed"):
+        _run(svc.generate_direct("a page", "t1"))
+
+
+def test_a_plan_that_misses_the_schema_fails_cleanly(core):
+    core["handler"] = lambda req: httpx.Response(200, json={
+        "result": 1, "json": {"title": "x"}, "schema_valid": False, "schema_errors": ["sections missing"]})
+    with pytest.raises(RuntimeError, match="failed"):
+        _run(svc.generate_direct("a page", "t1"))
+    assert len(core["calls"]) == 1
+
+
+def test_assembly_adds_tailwind_and_strips_wrappers(core):
+    plan = _plan(3)
+    plan["head_html"] = "<title>T</title>"
+    plan["sections"][0]["id"] = "Top Nav!"
+    html = svc._assemble(plan, [svc._clean_fragment(
+        "<!DOCTYPE html><html><head><title>x</title></head><body><header id='a'>h</header></body></html>")])
+    assert "cdn.tailwindcss.com" in html and 'charset="UTF-8"' in html
+    assert html.count("<body") == 1 and html.count("<head>") == 1 and "<header id='a'>h</header>" in html
+    _page_core(core, plan)
+    _run(svc.generate_direct("p", "t1"))
+    assert 'id="topnav"' in _run(svc.generate_direct("p", "t1"))["html"]
+
+
+def test_interview_ends_in_a_sectioned_page_for_the_same_user(core):
+    plan = _plan(3)
     replies = iter([
         json.dumps({"status": "interviewing", "questions": ["Colors?"], "summary": "s"}),
         json.dumps({"status": "ready", "questions": [], "summary": "full"}),
-        "<!DOCTYPE html><p>done</p>",
     ])
-    core["handler"] = lambda req: httpx.Response(200, json={"result": 1, "text": next(replies)})
+    page = _page_core(core, plan)
+    page_handler = core["handler"]
+
+    def handler(req):
+        body = json.loads(req.content)
+        if "output_schema" in body or "--- Write these sections now ---" in body["messages"][-1]["content"]:
+            return page_handler(req)
+        return httpx.Response(200, json={"result": 1, "text": next(replies)})
+    core["handler"] = handler
     first = _run(svc.start_session("landing page", "t1", "u1"))
     done = _run(svc.answer_questions(first["session_id"], ["blue"], "t1", "u1"))
-    assert done["status"] == "complete" and done["html"] == "<!DOCTYPE html><p>done</p>"
-    assert [c.headers["X-AMBIVO-USER-ID"] for c in core["calls"]] == ["u1", "u1", "u1"]
+    assert done["status"] == "complete" and 'id="footer"' in done["html"]
+    assert "blue" in json.loads(core["calls"][2].content)["messages"][-1]["content"]
+    assert page and all(c.headers["X-AMBIVO-USER-ID"] == "u1" for c in core["calls"])
 
 
 def test_route_maps_a_quota_refusal_to_402(core):
@@ -146,10 +242,9 @@ def test_routes_leave_the_quota_decision_to_core(core, monkeypatch):
     async def refuse(*a, **kw):
         raise AssertionError("AI page generation must not call /genai/check_quota")
     monkeypatch.setattr(quota_service, "check_genai_quota", refuse)
-    core["handler"] = lambda req: httpx.Response(200, json={"result": 1, "text": "<!DOCTYPE html>",
-                                                            "via_gateway": True})
+    _page_core(core, _plan(3))
     user = {"tenant_id": "byok", "userid": "u1"}
     assert _run(ai_generate.check_ai_available(user)) == {"available": True}
     out = _run(ai_generate.generate_direct(ai_generate.DirectGenerateRequest(prompt="p"), user))
-    assert out["html"] == "<!DOCTYPE html>"
-    assert [str(c.url) for c in core["calls"]] == ["https://core.test/genai/complete"]
+    assert out["html"].startswith("<!DOCTYPE html>")
+    assert {str(c.url) for c in core["calls"]} == {"https://core.test/genai/complete"}
