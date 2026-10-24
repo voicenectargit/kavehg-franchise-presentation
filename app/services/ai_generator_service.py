@@ -86,7 +86,7 @@ enough to generate a complete HTML page."""
 
 _MAX_SECTIONS = 12
 _SECTIONS_PER_CALL = 2
-_PARALLEL_SECTION_CALLS = 3
+_PARALLEL_SECTION_CALLS = 6  # every part at once: 12 sections at most, 2 per call
 _PLAN_MAX_TOKENS = 4000
 _SECTION_MAX_TOKENS = 6000
 
